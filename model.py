@@ -5,13 +5,18 @@ import tensorflow as tf
 class PESModel(object):
     def __init__(self):
         self.train_graph = tf.Graph()
-        self.val_graph = tf.Graph()
+        # validation and test graph are same
+        #self.val_graph = tf.Graph()
         self.test_graph = tf.Graph()
+        self.infer_graph = tf.Graph()
         self._build_model()
 
     def _build_model(self):
         with self.train_graph.as_default():
             pass
+
+    def calc_pes(self):
+        pass 
 
     def train(self, na, atom_type, lattvec, coord, energy, force, stress):
         """
