@@ -101,6 +101,19 @@ class PESModel(object):
             feats = tf.reshape(linear_out, shape=(-1, 32, 32, 1))
 
 
+        with tf.variable_scope("conv", initializer=tf.contrib.layers.xavier_initializer()):
+            res1 = self.residue_block(feats, 64, 32, "residue1")
+            # 32x32 -> 16x16
+            res1 = tf.layers.conv2d
+            res2 = self.residue_block(res1, 128, 64, "residue2")
+
+
+    def residue_block(self, inputs, mid_chan, out_chan, kernel_size=3, name=None):
+        with tf.variable_scope(name=name, initializer=tf.contrib.layers.xavier_initializer()):
+            input = tf.layers.conv2d(inputs, out_chan, 1, 1, "same", activation=tf.nn.relu)
+            layer1 = tf.layers.conv2d(inputs, mid_chan, 3, 1, "same", activation=tf.nn.relu)
+            layer2 = tf.layers.conv2d(layer1, out_chan, 3, 1, "same", activation=None)
+            return tf.nn.relu(input + layer2)
 
     def train(self):
         """
