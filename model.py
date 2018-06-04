@@ -42,7 +42,7 @@ class PESModel(object):
             ntyp = tf.placeholder(dtype=tf.int64, shape=(None, self.config["max_atom_num"]))
             latt = tf.placeholder(dtype=tf.float32, shape=(None, 3, 3))
             coords = tf.placeholder(dtype=tf.float32, shape=(None, self.config["max_atom_num"], 3))
-            self.pes = calc_pes(na, ntyp, latt, coords)
+            self.pes = self.calc_pes(na, ntyp, latt, coords)
             
     def eval_loss(self, data_path):
         dataset = tf.data.TFRecordDataset(tf.constant([data_path]))
@@ -62,6 +62,7 @@ class PESModel(object):
         loss = tf.reduce_mean(tf.square(train_data["energy"] - e_pred)) + \
                    opts.scale_f*tf.reduce_mean(mask*tf.square(train_data["force"] - f_pred)) + \
                    opts.scale_s*tf.reduce_mean(mask*tf.square(train_data["stress"] - s_pred))
+        return loss
 
     def calc_pes(self, na, ntyp, latt, coords):
         """
@@ -78,8 +79,18 @@ class PESModel(object):
        
         with tf.variable_scope("embedding", initializer=tf.contrib.layers.xavier_initializer()):
             embeds = tf.get_variable("embedding", shape=[len(self.config["embeds"]), opts.nembeds], dtype=tf.float32)
-        
-           
+
+        atom_embeds = tf.nn.embedding_lookup(embeds, ntyp)
+        atom_input = tf.concat((atom_embeds, coords), axis = 1)
+
+        rnn_func = lambda x: tf.nn.rnn_cell.BasicLSTMCell(num_units=opts.nunits)
+
+        with tf.variable_scope("rnn", initializer=tf.contrib.layers.xavier_initializer()):
+            cell_fw = tf.nn.rnn_cell.MultiRNNCell([rnn_func() for _ in range(opts.nlayers)])
+            cell_bw = tf.nn.rnn_cell.MultiRNNCell([rnn_func() for _ in range(opts.nlayers)])
+            outputs, outputs_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, atom_input, \
+                sequence_length=na, dtype=tf.float32)
+
         
 
 
