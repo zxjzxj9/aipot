@@ -91,7 +91,15 @@ class PESModel(object):
             outputs, outputs_states = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, atom_input, \
                 sequence_length=na, dtype=tf.float32)
 
-        
+        atom_feat = tf.concat(outputs_states, axis=1)
+        latt_feat = tf.reshape(latt, (-1, 9))
+
+        total_feat = tf.concat((atom_feat, latt_feat), axis=1)
+
+        with tf.variable_scope("linear", initializer=tf.contrib.layers.xavier_initializer()):
+            linear_out = tf.layers.dense(total_feat, opts.nfeats, activation=tf.nn.relu)
+            feats = tf.reshape(linear_out, shape=(-1, 32, 32, 1))
+
 
 
     def train(self):
