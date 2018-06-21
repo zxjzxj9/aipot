@@ -104,8 +104,10 @@ class PESModel(object):
         with tf.variable_scope("conv", initializer=tf.contrib.layers.xavier_initializer()):
             res1 = self.residue_block(feats, 64, 32, "residue1")
             # 32x32 -> 16x16
-            res1 = tf.layers.conv2d
+            # res1 = tf.layers.conv2d
             res2 = self.residue_block(res1, 128, 64, "residue2")
+            res3 = self.residue_block(res2, 256, 128, "residue3")
+
 
 
     def residue_block(self, inputs, mid_chan, out_chan, kernel_size=3, name=None):
