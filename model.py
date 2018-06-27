@@ -107,6 +107,10 @@ class PESModel(object):
             # res1 = tf.layers.conv2d
             res2 = self.residue_block(res1, 128, 64, "residue2")
             res3 = self.residue_block(res2, 256, 128, "residue3")
+            res4 = self.residue_block(res3, 512, 256, "residue4")
+            res5 = self.residue_block(res4, 1024, 512, "residue4")
+
+
 
 
 
