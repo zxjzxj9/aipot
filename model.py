@@ -126,6 +126,9 @@ class PESModel(object):
             e_out = tf.layers.dense(resout, units=1)
             f_out = tf.gradients(e_out, coords)
             s_out = tf.gradients(e_out, latt)
+            # transpose s_out to be batchsize x 3 x 3
+            s_out = tf.reshape(s_out, (-1, 3, 3))
+            s_out = tf.matmul(s_out, latt, transpose_b=True)
 
         return e_out, f_out, s_out
 
