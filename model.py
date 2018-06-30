@@ -99,19 +99,35 @@ class PESModel(object):
         with tf.variable_scope("linear", initializer=tf.contrib.layers.xavier_initializer()):
             linear_out = tf.layers.dense(total_feat, opts.nfeats, activation=tf.nn.relu)
             feats = tf.reshape(linear_out, shape=(-1, 32, 32, 1))
+            feats = tf.layers.conv2d(feats, 32, (1, 1), padding="same", activation=tf.nn.relu)
 
 
         with tf.variable_scope("conv", initializer=tf.contrib.layers.xavier_initializer()):
-            res1 = self.residue_block(feats, 64, 32, "residue1")
             # 32x32 -> 16x16
-            # res1 = tf.layers.conv2d
+            res1 = self.residue_block(feats, 64, 32, "residue1")
+            res1 = tf.layers.conv2d(res1, 32, (2, 2), (2, 2), padding="same", activation=tf.nn.relu)
+            # 16x16 -> 8x8
             res2 = self.residue_block(res1, 128, 64, "residue2")
+            res2 = tf.layers.conv2d(res2, 32, (2, 2), (2, 2), padding="same", activation=tf.nn.relu)
+            # 8x8 -> 4x4
             res3 = self.residue_block(res2, 256, 128, "residue3")
+            res3 = tf.layers.conv2d(res3, 32, (2, 2), (2, 2), padding="same", activation=tf.nn.relu)
+            # 4x4 -> 2x2
             res4 = self.residue_block(res3, 512, 256, "residue4")
+            res4 = tf.layers.conv2d(res4, 32, (2, 2), (2, 2), padding="same", activation=tf.nn.relu)
+            # 2x2 -> 1x1
             res5 = self.residue_block(res4, 1024, 512, "residue4")
+            res5 = tf.layers.conv2d(res5, 32, (2, 2), (2, 2), padding="same", activation=tf.nn.relu)
+
+        resout = tf.reshape(res5, (-1, 512))
 
 
+        with tf.variable_scope("output", initializer=tf.contrib.layers.xavier_initializer()):
+            e_out = tf.layers.dense(resout, units=1)
+            f_out = tf.gradients(e_out, coords)
+            s_out = tf.gradients(e_out, latt)
 
+        return e_out, f_out, s_out
 
 
     def residue_block(self, inputs, mid_chan, out_chan, kernel_size=3, name=None):
