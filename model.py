@@ -32,17 +32,17 @@ class PESModel(object):
 
     def _build_model(self):
         with self.train_graph.as_default():
-            self.train_loss = self.eval_loss(self.cofig["train_file"])
+            self.train_loss, self.iterator = self.eval_loss(self.config["train_file"])
         
         with self.val_graph.as_default():
             self.val_loss = self.eval_loss(self.config["val_file"])
 
         with self.infer_graph.as_default():
-            na = tf.placeholder(dtype=tf.int64, shape=(None,))
-            ntyp = tf.placeholder(dtype=tf.int64, shape=(None, self.config["max_atom_num"]))
-            latt = tf.placeholder(dtype=tf.float32, shape=(None, 3, 3))
-            coords = tf.placeholder(dtype=tf.float32, shape=(None, self.config["max_atom_num"], 3))
-            self.pes = self.calc_pes(na, ntyp, latt, coords)
+            self.na = tf.placeholder(dtype=tf.int64, shape=(None,))
+            self.ntyp = tf.placeholder(dtype=tf.int64, shape=(None, self.config["max_atom_num"]))
+            self.latt = tf.placeholder(dtype=tf.float32, shape=(None, 3, 3))
+            self.coords = tf.placeholder(dtype=tf.float32, shape=(None, self.config["max_atom_num"], 3))
+            self.pes = self.calc_pes(self.na, self.ntyp, self.latt, self.coords)
             
     def eval_loss(self, data_path):
         dataset = tf.data.TFRecordDataset(tf.constant([data_path]))
@@ -62,7 +62,7 @@ class PESModel(object):
         loss = tf.reduce_mean(tf.square(train_data["energy"] - e_pred)) + \
                    opts.scale_f*tf.reduce_mean(mask*tf.square(train_data["force"] - f_pred)) + \
                    opts.scale_s*tf.reduce_mean(mask*tf.square(train_data["stress"] - s_pred))
-        return loss
+        return loss, iterator
 
     def calc_pes(self, na, ntyp, latt, coords):
         """
@@ -132,7 +132,6 @@ class PESModel(object):
 
         return e_out, f_out, s_out
 
-
     def residue_block(self, inputs, mid_chan, out_chan, kernel_size=3, name=None):
         with tf.variable_scope(name=name, initializer=tf.contrib.layers.xavier_initializer()):
             input = tf.layers.conv2d(inputs, out_chan, 1, 1, "same", activation=tf.nn.relu)
@@ -144,7 +143,33 @@ class PESModel(object):
         """
             Traing the model
         """
-        pass
+        with tf.Session(graph=self.train_graph) as s:
+            optimizer = tf.train.AdamOptimizer(learning_rate=1e-3, beta1=0.9, beta2=0.999)
+            train_op = optimizer.minimize(self.train_loss)
+
+            s.run(tf.global_variables_initializer())
+            s.run(self.iterator.initializer())
+
+            writer = tf.summary.FileWriter("./logs", self.train_graph)
+            tf.summary.scalar("loss", self.train_loss)
+            ms_op = tf.summary.merge_all()
+
+            saver = tf.train.Saver()
+
+            cnt = 0
+            while True:
+                cnt += 1
+                try:
+                    loss, _, ms = s.run([self.train_loss, train_op, ms_op], feed_dict={})
+                    writer.add_summary(ms_op, cnt)
+
+                    if cnt % 1000 == 0:
+                        saver.save(s, "./models")
+
+                except tf.errors.OutOfRangeError:
+                    print("Fininshed training...")
+
+
 
 
 if __name__ == "__main__":
@@ -163,5 +188,3 @@ if __name__ == "__main__":
         while True:
             print(s.run(iterator.get_next()))
             break
-
-    
