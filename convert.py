@@ -19,9 +19,9 @@ class StrReader(object):
         self.config = yaml.load(open(config))
         self.str_file = self.config["str_file"]
         self.force_file = self.config["force_file"]
-        self.mapping = {
-            self.config["atoms"][k]:self.config["embeds"][k] \
-            for k in self.config["atoms"].keys() }
+        #self.mapping = {
+        #    self.config["atoms"][k]:self.config["embeds"][k] \
+        #    for k in self.config["atoms"].keys() }
 
     def _parse_str(self, s):
         if not s.readline(): raise StopIteration
@@ -50,7 +50,7 @@ class StrReader(object):
 
         #print(atoms)
         #print(self.mapping)
-        atoms = [self.mapping[at] for at in atoms]
+        #atoms = [self.mapping[at] for at in atoms]
         return na, energy, np.array(atoms), np.stack([vec1, vec2, vec3], axis=0),\
                np.pad(np.stack(coords, axis=0), ((0, self.config["max_atom_num"]-na), (0, 0)),\
                       'constant')
@@ -67,7 +67,7 @@ class StrReader(object):
             forces.append(list(map(float, tmp[2:])))
         #print(atoms)
         #print(self.mapping)
-        atoms = [self.mapping[at] for at in atoms]
+        #atoms = [self.mapping[at] for at in atoms]
         f.readline()
         f.readline()
         stress = np.array([[sxx, sxy, sxz], [sxy, syy, syz], [sxz, syz, szz]])

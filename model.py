@@ -3,6 +3,7 @@
 import tensorflow as tf
 import yaml
 from option import opts
+import itertools
 
 def _parse_function(example):
     features = {
@@ -19,6 +20,194 @@ def _parse_function(example):
     parsed_features["latt"] = tf.reshape(parsed_features["latt"], (3, 3))
     parsed_features["stress"] = tf.reshape(parsed_features["stress"], (3, 3))
     return parsed_features
+
+class DensityNet(object):
+    """
+        Prototype of neural network to use 3D convolution
+        max_atom: max atom number
+        embed_size: atomic embedding size
+        coeff_size: number of zetas
+        nsc: supercell extenstion in x, y, z direction
+        nmesh: 3d lattice mesh in x, y, z direction
+    """
+    def __init__(self, max_atom, embed_size, coeff_size, nsc, nmesh=32):
+        self.atom_kinds = 120 # index zero is unkown atoms
+        self.max_atom = max_atom
+        self.embed_size = embed_size
+        self.coff_size = coeff_size
+        self.nsc = nsc
+        self.nmesh = nmesh
+
+        self._build_graph()
+
+    def get_embedding(self):
+        with tf.variable_scope("atomic_embedding"):
+            embed=tf.get_variable("embed", shape=(self.atom_kinds, self.embed_size),
+                dtype=tf.float32, initializer=tf.initializers.random_normal(stddev=1.0e-3))
+        return embed
+
+    def get_sc(self):
+        """
+            get supercell vector given the grid mesh, dim (nsc**3)*3
+        """
+        sc = []
+        a = np.array([1, 0, 0], dtype=np.float32)
+        b = np.array([0, 1, 0], dtype=np.float32)
+        c = np.array([0, 0, 1], dtype=np.float32)
+        # order z -> y -> x
+        for i, j, k in itertools.product(*itertools.repeat(range(-self.nsc//2,self.nsc//2+1), 3)):
+            sc.append(i*a + j*b + k*c)
+        sc = np.concatenate(sc, axis=0)
+
+        with tf.variable_scope("supercell"):
+            sc = tf.constant(sc, dtype=tf.float32)
+        return sc
+
+    def get_mesh(self):
+        """
+            get lattice mesh, dim (nmesh**3)*3
+        """
+        mesh = []
+        step = 1.0/self.nmesh
+        a = np.array([step, 0, 0], dtype=np.float32)
+        b = np.array([0, step, 0], dtype=np.float32)
+        c = np.array([0, 0, step], dtype=np.float32)
+        for i, j, k in itertools.product(*itertools.repeat(range(self.nmesh), 3)):
+            mesh.append(i*a + j*b + k*c)
+        mesh = np.concatenate(mesh, axis=0)
+
+        with tf.variable_scope("latt_mesh"):
+            mesh = tf.constant(mesh, dtype=tf.float32)
+        return mesh
+
+    def density_func(self, atom_ids, coords, latts, embed, masks):
+        """
+            Calculate the electron density give inputs
+            density is given by sum(coeff*exp(-zeta*r))
+            coords: in x y z, real space
+            latt: real space
+        """
+        with tf.variable_scope("atomic_density"):
+            embeds = tf.nn.embedding_lookup(embed, atom_ids)
+            expand_last = lambda x: tf.expand_dims(x, -1)
+            expand_last2 = lambda x: expand_last(expand_last(x))
+
+            with tf.variable_scope("density_param"):
+                zeta = tf.get_variable("zeta", shape=(self.coff_size, self.embed_size),
+                    dtype=tf.float32, initializer=tf.initializers.random_uniform(maxval=1.0))
+                coeff = tf.get_variable("coeff", shape=(self.coff_size, self.embed_size),
+                    dtype=tf.float32, initializer=tf.initializers.random_uniform(maxval=1.0))
+
+            with tf.variable_scope("density_calc"):
+                # embeds: batch x max_atom x embed_size
+                # zeta/coeff: coff_size x embed_size
+                # zetas/coeffs: batch x max_atom x coff_size
+                # see https://stackoverflow.com/questions/38235555/tensorflow-matmul-of-input-matrix-with-batch-data/38244353
+                zetas = expand_last2(tf.einsum("bij,kj->bik", embeds, zeta)) # batch x max_atom x coff_size x 1 x 1
+                coeffs = expand_last2(tf.einsum("bij,kj->bik", embeds, coeff))
+
+                sc = tf.expand_dims(self.get_sc(), axis=0) # 1 x nsc**3 x 3
+                mesh = tf.expand_dims(self.get_mesh(), axis=0) # 1 x nmesh**3 x 3
+
+                # Notice Row Major or Column Major !!!
+                inv_latts = tf.matrix_inverse(latts)
+                frac = tf.einsum("bij,bjk->bik", inv_latts, coords) # batch x maxatom x 3
+                frac = tf.expand_dims(frac, axis=2) # batch x maxatom x 1 x 3
+                frac_all = tf.expand_dims(frac + sc, axis=3) # batch x maxatom x nsc**3 x 1 x 3
+                frac_dvec = frac_all - mesh # batch x maxatom x nsc**3 x nmesh**3 x 3
+                real_dvec = tf.einsum("bijkm,bmn->bijkn", frac_dvec, latts) # batch x maxatom x nsc**3 x nmesh**3 x 3
+                dist = tf.expand_dims(tf.sqrt(tf.sum(real_dvec**2, dim=-1)), 2) # batch x maxatom x 1 x nsc**3 x nmesh**3
+                den1 = coeff*tf.exp(-zeta*dist) # batch x maxatom x coff_size x nsc**3 x nmesh**3
+                den1 = tf.cast(masks, tf.float32)*den1 # mask atoms
+                den_tot = tf.reduce_sum(den1, [1, 2, 3]) # batch x nmesh**3
+                # Reshape and gives us the final charge density
+                den_tot = tf.reshape(den_tot, [-1, self.nmesh, self.nmesh, self.nmesh, 1]) # batch x self.nmesh x self.nmesh x self.nmesh x 1
+        return den_tot
+
+    def residue_conn(self, tensor, channel_out, scope, training=True):
+        with tf.varaible_scope(scope):
+            layer2 = tf.layers.conv2d(tensor, channel_out, (3,3,3), (2,2,2), padding='same', activation=None)
+            layer2 = tf.layers.batch_normalization(layer2, activation_fn=tf.nn.relu, training=training)
+            layer3 = tf.layers.conv2d(layer2, 32, (3,3,3), (1,1,1), padding='same', activation=None)
+            layer3 = tf.layers.batch_normalization(layer3, activation_fn=tf.nn.relu, training=training)
+            layer4 = tf.layers.conv2d(layer2, 32, (3,3,3), (1,1,1), padding='same', activation=None)
+            layer4 = tf.layers.batch_normalization(layer3, activation_fn=None, training=training)
+            layer4 = tf.nn.relu(layer4)
+        return layer4
+
+    def energy_func(self, density, training=True):
+
+        with tf.variable_scope("energy_conv"):
+            layer1 = tf.layers.conv2d(density, 16, (3,3,3), (1,1,1), padding='same', activation=tf.nn.relu)
+            # 32->16, 16->8, 8->4, 4->2, 2->1
+            res1 = residue_conn(layer1, 32, 'res1', training)
+            res2 = residue_conn(res1, 64, 'res2', training)
+            res3 = residue_conn(res2, 128, 'res3', training)
+            res4 = residue_conn(res3, 256, 'res4', training)
+            res5 = residue_conn(res4, 512, 'res5', training) # nbatch x 1 x 1 x 1 x 512
+
+            layer6 = tf.layers.conv2d(res5, 1, (1,1,1), (1,1,1), padding='same', activation=tf.nn.relu)
+            energy = tf.squeeze(layer6)
+        return energy
+
+    def _build_graph(self):
+        self.train_graph = tf.Graph()
+        self.valid_graph = tf.Graph()
+        self.infer_graph = tf.Graph()
+
+    def train(self, atom_ids, masks, coords, latts, forces, energies, stresses):
+        with self.train_graph.as_default():
+            embed = self.get_embedding()
+            density = self.density_func(atom_ids, coords, latts, embed, masks)
+            energies_p = self.energy_func(density, True)
+            forces_p = tf.gradients(energy, coords)
+            vols = tf.abs(tf.linalg.det(latts))
+            inv_latts = tf.inv_latts(latts)
+            stresses_p = -tf.einsum("bij,bkj->bik", tf.gradients(energy, latts), inv_latts)*vols
+
+            loss = tf.reduce_mean((energies-energies_p)**2) \
+                + 1e-3*tf.reduce_mean((forces-forces_p)**2)
+                + 1e-3*tf.reduce_mean((stresses-stresses_p)**2)
+
+            energy_loss_t = tf.sqrt(tf.reduce_mean((energies-energies_p)**2))
+            force_loss_t = tf.sqrt(tf.reduce_mean((forces-forces_p)**2))
+            stress_loss_t = tf.sqrt(tf.reduce_mean((stresses-stresses_p)**2))
+        return loss, energy_loss_t, force_loss_t, stress_loss_t
+
+
+    def validation(self, atom_ids, masks, coords, latts, forces, energies, stresses):
+        with self.train_graph.as_default():
+            embed = self.get_embedding()
+            density = self.density_func(atom_ids, coords, latts, embed, masks)
+            energies_p = self.energy_func(density, False)
+            forces_p = tf.gradients(energy, coords)
+            vols = tf.abs(tf.linalg.det(latts))
+            inv_latts = tf.inv_latts(latts)
+            stresses_p = -tf.einsum("bij,bkj->bik", tf.gradients(energy, latts), inv_latts)*vols
+
+            loss = tf.reduce_mean((energies-energies_p)**2) \
+                + 1e-3*tf.reduce_mean((forces-forces_p)**2)
+                + 1e-3*tf.reduce_mean((stresses-stresses_p)**2)
+
+            energy_loss_t = tf.sqrt(tf.reduce_mean((energies-energies_p)**2))
+            force_loss_t = tf.sqrt(tf.reduce_mean((forces-forces_p)**2))
+            stress_loss_t = tf.sqrt(tf.reduce_mean((stresses-stresses_p)**2))
+        return loss, energy_loss_t, force_loss_t, stress_loss_t
+
+
+    def inference(self, atom_ids, masks, coords, latts):
+        with self.infer_graph.as_default():
+            #atom_ids = tf.placeholder(tf.int32, shape=(None, self.max_atom))
+            #masks = tf.placeholder(tf.int32, shape=(None, self.max_atom))
+            #coords = tf.placeholder(tf.float32, shape=(None, self.max_atom, 3))
+            #latts = tf.placeholder(tf.float32, shape=(None, 3, 3))
+            embed = self.get_embedding()
+            density = self.density_func(atom_ids, coords, latts, embed, masks)
+            energy_p = self.energy_func(density, False)
+            force_p = tf.gradients(self.energy_p, self.coords)
+            vols = tf.abs(tf.linalg.det(latts))
+            stress_p = -tf.einsum("bij,bkj->bik", tf.gradients(energy, latts), inv_latts)*vols
+        return energy_p, force_p, stress_p
 
 class PESModel(object):
     def __init__(self, config="./config.yml"):
