@@ -48,10 +48,11 @@ class StrReader(object):
         s.readline() # End one structure
         s.readline() # blank line
 
-        #print(atoms)
+        #print(np.pad(np.array(atoms), (0, self.config["max_atom_num"]-na), 'constant'))
         #print(self.mapping)
         #atoms = [self.mapping[at] for at in atoms]
-        return na, energy, np.array(atoms), np.stack([vec1, vec2, vec3], axis=0),\
+        return na, energy, np.pad(np.array(atoms), (0, self.config["max_atom_num"]-na), 'constant'), \
+               np.stack([vec1, vec2, vec3], axis=0),\
                np.pad(np.stack(coords, axis=0), ((0, self.config["max_atom_num"]-na), (0, 0)),\
                       'constant')
 
@@ -109,7 +110,7 @@ class RecordWriter(object):
             "energy": self._float_feature(tmp_str[1]),\
             "serial": self._int64_feature(tmp_str[2]),\
             "latt": self._float_feature(tmp_str[3]),\
-            "coords": self._float_feature(tmp_str[4]),\
+            "coord": self._float_feature(tmp_str[4]),\
             "stress": self._float_feature(tmp_for[1]),\
             "force": self._float_feature(tmp_for[3]) }
         example = tf.train.Example(features=tf.train.Features(feature=feature))
@@ -135,7 +136,6 @@ class RecordWriter(object):
             else:
                 ntest += 1
                 self.write_feature(tmp_str, tmp_for, self.test_writer)
-            #break
         print("")
         self.train_writer.close()
         self.val_writer.close()

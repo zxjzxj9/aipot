@@ -13,9 +13,9 @@ str_file: "./data/TrainStr.txt"
 force_file: "./data/TrainFor.txt"
 
 # Ouput Train file
-train_file: "./train.tfrecords"
-val_file: "./val.tfrecords"
-test_file: "./test.tfrecords"
+train_file: "./data/train.tfrecords"
+val_file: "./data/val.tfrecords"
+test_file: "./data/test.tfrecords"
 
 # For data splitting
 train_prob: 0.9
@@ -36,3 +36,12 @@ test_prob: 0.05
 #    O: 1
 #    N: 2
 #    H: 3
+
+# Training parameter
+embed_size: 256
+coeff_size: 8
+# 3x3x3 supercell
+super_cell: 3
+nepoch: 100
+batch_size: 32
+learning_rate: 0.001
