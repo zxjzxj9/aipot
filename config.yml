@@ -6,7 +6,7 @@ version: 0.1
 
 # Define max atom number to be trained
 max_atom_num: 32
-
+max_energy: -60.0
 # Define the structure file
 str_file: "./data/TrainStr.txt"
 # Define the force file
@@ -39,9 +39,11 @@ test_prob: 0.05
 
 # Training parameter
 embed_size: 256
-coeff_size: 8
+coeff_size: 16
 # 3x3x3 supercell
 super_cell: 3
 nepoch: 100
-batch_size: 32
+batch_size: 16 
 learning_rate: 0.001
+mean: -67.90
+std: 4.62 

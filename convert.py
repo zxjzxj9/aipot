@@ -13,6 +13,7 @@ import numpy as np
 import random
 import yaml
 from collections import Iterable
+import random
 
 class StrReader(object):
     def __init__(self, config="./config.yml"):
@@ -48,12 +49,13 @@ class StrReader(object):
         s.readline() # End one structure
         s.readline() # blank line
 
+        coords = np.stack(coords, axis=0)
         #print(np.pad(np.array(atoms), (0, self.config["max_atom_num"]-na), 'constant'))
         #print(self.mapping)
         #atoms = [self.mapping[at] for at in atoms]
         return na, energy, np.pad(np.array(atoms), (0, self.config["max_atom_num"]-na), 'constant'), \
                np.stack([vec1, vec2, vec3], axis=0),\
-               np.pad(np.stack(coords, axis=0), ((0, self.config["max_atom_num"]-na), (0, 0)),\
+               np.pad(coords, ((0, self.config["max_atom_num"]-na), (0, 0)),\
                       'constant')
 
     def _parse_force(self, f, na):
@@ -80,10 +82,13 @@ class StrReader(object):
         with open(self.str_file) as s, \
              open(self.force_file) as f:
             while True:
-                tmp_str = self._parse_str(s)
-                tmp_for = self._parse_force(f, tmp_str[0])
-                assert functools.reduce(lambda x,y : x and y, zip(tmp_str[2], tmp_for[2]))
-                yield tmp_str, tmp_for
+                try:
+                    tmp_str = self._parse_str(s)
+                    tmp_for = self._parse_force(f, tmp_str[0])
+                    assert functools.reduce(lambda x,y : x and y, zip(tmp_str[2], tmp_for[2]))
+                    yield tmp_str, tmp_for
+                except StopIteration:
+                    return
 
 class RecordWriter(object):
     def __init__(self, config="./config.yml"):
@@ -116,13 +121,17 @@ class RecordWriter(object):
         example = tf.train.Example(features=tf.train.Features(feature=feature))
         writer.write(example.SerializeToString())
     
-    def write(self, reader):
+    def write(self, reader, aug_num=0):
         cnt = 0
         ntrain = 0
         nval = 0
         ntest = 0
-
+      
+        e_rec = []  
+        
         for tmp_str, tmp_for in reader:
+            if tmp_str[1] > self.config["max_energy"]: continue
+            e_rec.append(tmp_str[1])
             cnt += 1
             print("Current Num: {}/170k, Train Num: {}, Test Num: {}, Val Num: {}"\
                     .format(cnt, ntrain, nval, ntest), end="\r")
@@ -130,6 +139,13 @@ class RecordWriter(object):
             if prob < self.config["train_prob"]:
                 ntrain += 1
                 self.write_feature(tmp_str, tmp_for, self.train_writer)
+
+                for i in range(aug_num):
+                    l1, l2, l3 = random.random(), random.random(), random.random()
+                    tmp_str[4][:tmp_str[0],:] += \
+                        l1*tmp_str[3][0, :] + l2*tmp_str[3][1, :] + l3*tmp_str[3][2, :]
+                    self.write_feature(tmp_str, tmp_for, self.train_writer)
+                    
             elif prob > self.config["train_prob"] and prob < 1.0 - self.config["test_prob"]:
                 nval += 1
                 self.write_feature(tmp_str, tmp_for, self.val_writer)
@@ -137,6 +153,7 @@ class RecordWriter(object):
                 ntest += 1
                 self.write_feature(tmp_str, tmp_for, self.test_writer)
         print("")
+        print("Mean value of data: {:.2f}, std value of data {:.2f}".format(np.mean(e_rec), np.std(e_rec)))
         self.train_writer.close()
         self.val_writer.close()
         self.test_writer.close()
@@ -144,7 +161,7 @@ class RecordWriter(object):
 def create_db():
     sr = StrReader()
     rw = RecordWriter()
-    rw.write(sr)
+    rw.write(sr, aug_num=0)
 
 if __name__ == "__main__":
     create_db()
