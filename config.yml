@@ -45,5 +45,5 @@ super_cell: 3
 nepoch: 100
 batch_size: 16 
 learning_rate: 0.001
-mean: -67.90
-std: 4.62 
+mean: -102.62
+std: 3.91
