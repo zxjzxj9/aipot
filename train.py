@@ -61,7 +61,10 @@ class ModelTrainer(object):
             global_step = tf.Variable(0, name='global_step',trainable=False)
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             with tf.control_dependencies(update_ops):
-                optim = tf.train.AdamOptimizer(learning_rate=self.lr).minimize(loss_t, global_step=global_step)
+                optimizer = tf.train.AdamOptimizer(learning_rate=self.lr, beta1=0.99, beta2=0.999)
+                optimizer = tf.contrib.estimator.clip_gradients_by_norm(optimizer, clip_norm=5.0)
+                optim = optimizer.minimize(loss_t, global_step=global_step)
+            #print(tf.trainable_variables()); import sys; sys.exit()
             writer = tf.summary.FileWriter("./logs", self.density_net.train_graph)
             tf.summary.scalar("0.loss", loss_t)
             tf.summary.scalar("1.energy_loss", energy_loss_t)

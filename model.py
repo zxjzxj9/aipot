@@ -75,18 +75,18 @@ class DensityNet(object):
             coords: in x y z, real space
             latt: real space
         """
-        with tf.variable_scope("atomic_density"):
+        with tf.variable_scope("atomic_density", initializer=tf.keras.initializers.he_normal()):
             embeds = tf.nn.embedding_lookup(embed, atom_ids)
             expand_last = lambda x: tf.expand_dims(x, -1)
             expand_last2 = lambda x: expand_last(expand_last(x))
 
-            with tf.variable_scope("density_param"):
+            with tf.variable_scope("density_param", initializer=tf.keras.initializers.he_normal()):
                 zeta = tf.get_variable("zeta", shape=(self.coff_size, self.embed_size),
                     dtype=tf.float32, initializer=tf.initializers.random_uniform(minval=0.0, maxval=1.0))
                 coeff = tf.get_variable("coeff", shape=(self.coff_size, self.embed_size),
                     dtype=tf.float32, initializer=tf.initializers.random_uniform(minval=0.0, maxval=1.0))
 
-            with tf.variable_scope("density_calc"):
+            with tf.variable_scope("density_calc", initializer=tf.keras.initializers.he_normal()):
                 # embeds: batch x max_atom x embed_size
                 # zeta/coeff: coff_size x embed_size
                 # zetas/coeffs: batch x max_atom x coff_size
@@ -99,7 +99,7 @@ class DensityNet(object):
 
                 # Notice Row Major or Column Major !!!
                 inv_latts = tf.matrix_inverse(latts)
-                frac = tf.einsum("bij,bjk->bik", coords, inv_latts) # batch x maxatom x 3
+                frac = tf.mod(tf.einsum("bij,bjk->bik", coords, inv_latts), 1.0) # batch x maxatom x 3
                 frac = tf.expand_dims(frac, axis=2) # batch x maxatom x 1 x 3
                 frac_all = tf.expand_dims(frac + sc, axis=2) # batch x maxatom x 1 x nsc**3  x 3
                 frac_dvec = frac_all - mesh # batch x maxatom x nmesh**3 x nsc**3 x 3
@@ -109,10 +109,10 @@ class DensityNet(object):
                 # Get max contribution atom location
                 dist_sq = tf.sqrt(tf.maximum(dist_sq, 1e-6))
                 # dist = tf.reduce_min(tf.sqrt(dist_sq, name="dist"), axis=2)  # batch x maxatom x nmesh**3
-                dist = -tf.nn.top_k(-dist_sq, k=6, sorted=False)[0]  # batch x maxatom x nmesh**3 x 6
+                dist = -tf.nn.top_k(-dist_sq, k=3, sorted=False)[0]  # batch x maxatom x nmesh**3 x 6
                 dist = tf.expand_dims(dist, 2, name="expand_dist") # batch x maxatom x 1 x nmesh**3 x 6
                 den1 = coeffs*tf.exp(-tf.abs(zetas*dist)) # batch x maxatom x coff_size x nmesh**3 x 6
-                den1 = tf.cast(masks, tf.float32)*den1 # mask atoms
+                den1 = tf.reshape(masks, (-1, self.max_atom, 1, 1, 1))*den1 # mask atoms
                 den_tot = tf.reduce_sum(den1, [1, 2, 4]) # batch x nmesh**3
                 #print(den_tot); import sys; sys.exit()
                 # print(den_tot)
@@ -122,7 +122,7 @@ class DensityNet(object):
         return den_tot
 
     def residue_conn(self, tensor, channel_out, channel_middle, scope, training=True):
-        with tf.variable_scope(scope):
+        with tf.variable_scope(scope, initializer=tf.keras.initializers.he_normal()):
             layer2 = tf.layers.conv3d(tensor, channel_out, (3,3,3), (2,2,2), padding='same', activation=None)
             layer2 = tf.layers.batch_normalization(layer2, training=training)
             layer2 = tf.nn.relu(layer2)
@@ -136,9 +136,10 @@ class DensityNet(object):
 
     def energy_func(self, density, training=True):
 
-        with tf.variable_scope("energy_conv"):
+        with tf.variable_scope("energy_conv", initializer=tf.keras.initializers.he_normal()):
             layer1 = tf.layers.conv3d(density, 16, (3,3,3), (1,1,1), padding='same', activation=tf.nn.relu)
-            # 32->16, 16->8, 8->4, 4->2, 2->1
+            ## 32->16, 16->8, 8->4, 4->2, 2->1
+            # 16->8, 8->4, 4->2, 2->1
             res1 = self.residue_conn(layer1, 32, 64, 'res1', training)
             res2 = self.residue_conn(res1, 64, 128, 'res2', training)
             res3 = self.residue_conn(res2, 128, 256, 'res3', training)
@@ -148,6 +149,9 @@ class DensityNet(object):
             layer6 = tf.layers.conv3d(res5, 1, (1,1,1), (1,1,1), padding='same')
             #print(layer6)
             energy = self.std*tf.squeeze(layer6) + self.mean
+            #std = tf.Variable(1, dtype=tf.float32)
+            #mean = tf.Variable(0, dtype=tf.float32)
+            #energy = std*tf.exp(tf.squeeze(layer6)) + mean
         return energy
 
     def _build_graph(self):
@@ -158,21 +162,28 @@ class DensityNet(object):
     def train(self, atom_ids, coords, latts, forces, energies, stresses):
         with self.train_graph.as_default():
             embed = self.get_embedding()
-            masks = tf.cast(atom_ids != 0, tf.float32)
+            masks = tf.cast(tf.not_equal(atom_ids, 0), tf.float32)
             density = self.density_func(atom_ids, coords, latts, embed, masks)
             energies_p = self.energy_func(density, True)
-            forces_p = tf.gradients(energies_p, coords)[0]
+            forces_p = -tf.gradients(energies_p, coords)[0]
             vols = tf.reshape(tf.abs(tf.linalg.det(latts)), (-1, 1, 1))
             #inv_latts = tf.matrix_inverse(latts)
             stresses_p = -tf.einsum("bij,bkj->bik", tf.gradients(energies_p, latts)[0], latts)/vols
-            na = tf.reduce_sum(masks)
+            na = tf.reduce_sum(masks, axis=1)
             # loss = energies_p
             # self.test_ops.append(tf.print(energies))
             # self.test_ops.append(tf.print(energies_p))
-            loss = tf.reduce_sum((energies-energies_p)**2)/na \
-                + tf.reduce_mean((forces-forces_p)**2) \
-                + tf.reduce_mean((stresses-stresses_p)**2)
-            energy_loss_t = tf.sqrt(tf.reduce_mean((energies-energies_p)**2))/na
+            #delta_energy_per_atom = (energies-energies_p)/na
+            #delta_force = forces-forces_p
+            #delta_stress = stresses-stresses_p
+            loss = tf.losses.huber_loss(energies/na, energies_p/na) + \
+                   tf.losses.huber_loss(forces, forces_p) + \
+                   tf.losses.huber_loss(stresses, stresses_p)
+            #loss = tf.reduce_mean((energies-energies_p)**2/na) \
+            #    + tf.reduce_mean((forces-forces_p)**2) \
+            #    + tf.reduce_mean((stresses-stresses_p)**2)
+            #  loss = tf.reduce_mean((energies-energies_p)**2/na) 
+            energy_loss_t = tf.sqrt(tf.reduce_mean((energies-energies_p)**2/na))
             force_loss_t = tf.sqrt(tf.reduce_mean((forces-forces_p)**2))
             stress_loss_t = tf.sqrt(tf.reduce_mean((stresses-stresses_p)**2))
         return loss, energy_loss_t, force_loss_t, stress_loss_t
@@ -189,13 +200,15 @@ class DensityNet(object):
             #inv_latts = tf.matrix_inverse(latts)
             stresses_p = -tf.einsum("bij,bkj->bik", tf.gradients(energies_p, latts)[0], latts)/vols
 
-            loss = 0.1*tf.reduce_sum((energies-energies_p)**2)/tf.reduce_sum(masks)**2 \
-                + tf.reduce_mean((forces-forces_p)**2) \
-                + tf.reduce_mean((stresses-stresses_p)**2)
+            #loss = 0.1*tf.reduce_sum((energies-energies_p)**2)/tf.reduce_sum(masks)**2 \
+            #    + tf.reduce_mean((forces-forces_p)**2) \
+            #    + tf.reduce_mean((stresses-stresses_p)**2)
 
-            energy_loss_t = tf.sqrt(tf.reduce_sum((energies-energies_p)**2))/tf.reduce_sum(masks)
+            energy_loss_t = tf.sqrt(tf.reduce_sum((energies-energies_p)**2)/tf.reduce_sum(masks))
             force_loss_t = tf.sqrt(tf.reduce_mean((forces-forces_p)**2))
             stress_loss_t = tf.sqrt(tf.reduce_mean((stresses-stresses_p)**2))
+            loss = energy_loss_t + force_loss_t + stress_loss_t
+
         return loss, energy_loss_t, force_loss_t, stress_loss_t
 
 
