@@ -2,7 +2,7 @@
 
 import tensorflow as tf
 import yaml
-from model import DensityNet
+from model import AttnNet
 
 from tensorflow.python import debug as tf_debug
 
@@ -31,20 +31,23 @@ class ModelTrainer(object):
     def __init__(self, config):
         self.config = yaml.load(open(config))
         self.max_atom = self.config["max_atom_num"]
-        self.embed_size = self.config["embed_size"]
-        self.coeff_size = self.config["coeff_size"]
-        self.nsc = self.config["super_cell"]
+
+        self.n_atom_embed = self.config["n_atom_embed"]
+        self.n_kmesh = self.config["n_kmesh"]
+        self.n_trans = self.config["n_trans"]
+        self.n_heads = self.config["n_heads"]
+        self.n_ff = self.config["n_ff"]
+
         self.train_path = self.config["train_file"]
         self.nepoch = self.config["nepoch"]
         self.bs = self.config["batch_size"]
         self.lr = self.config["learning_rate"]
-        self.mean = self.config["mean"]
-        self.std = self.config["std"]
-        self.density_net = DensityNet(self.max_atom, self.embed_size, self.coeff_size, self.nsc, self.mean, self.std)
+
+        self.attn_net = AttnNet(self.max_atom, self.n_atom_embed, self.n_kmesh, self.n_trans, self.n_heads, self.n_ff)
 
     def train(self):
 
-        with self.density_net.train_graph.as_default():
+        with self.attn_net.train_graph.as_default():
 
             dataset = tf.data.TFRecordDataset(tf.constant([self.train_path]))
             dataset = dataset.map(lambda x: _parse_function(x, self.max_atom))
@@ -55,17 +58,18 @@ class ModelTrainer(object):
             features = iterator.get_next() 
       
             loss_t, energy_loss_t, force_loss_t, stress_loss_t = \
-                self.density_net.train(features["serial"], features["coord"], features["latt"], 
+                self.attn_net.train(features["serial"], features["coord"], features["latt"], 
                     features["force"], features["energy"], features["stress"])
        
             global_step = tf.Variable(0, name='global_step',trainable=False)
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             with tf.control_dependencies(update_ops):
-                optimizer = tf.train.AdamOptimizer(learning_rate=self.lr, beta1=0.99, beta2=0.999)
+                #optimizer = tf.train.AdamOptimizer(learning_rate=self.lr, beta1=0.99, beta2=0.999)
+                optimizer = tf.train.AdamOptimizer(learning_rate=self.lr)
                 optimizer = tf.contrib.estimator.clip_gradients_by_norm(optimizer, clip_norm=5.0)
                 optim = optimizer.minimize(loss_t, global_step=global_step)
             #print(tf.trainable_variables()); import sys; sys.exit()
-            writer = tf.summary.FileWriter("./logs", self.density_net.train_graph)
+            writer = tf.summary.FileWriter("./logs", self.attn_net.train_graph)
             tf.summary.scalar("0.loss", loss_t)
             tf.summary.scalar("1.energy_loss", energy_loss_t)
             tf.summary.scalar("2.force_loss", force_loss_t)
