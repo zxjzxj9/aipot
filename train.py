@@ -76,17 +76,26 @@ class ModelTrainer(object):
             tf.summary.scalar("3.stress_loss", stress_loss_t)
             ms_op = tf.summary.merge_all()
             check_op = tf.add_check_numerics_ops()
-            with tf.train.MonitoredTrainingSession() as s:
+
+            saver = tf.train.Saver()
+            #with tf.train.MonitoredTrainingSession() as s:
+            with tf.Session() as s:
                 #s = tf_debug.LocalCLIDebugWrapperSession(s)
-                #s.run(tf.global_variables_initializer())
+                s.run(tf.global_variables_initializer())
                 #s.run(iterator.initializer)
-                while not s.should_stop():
-                    #_, loss, _, ms, step = s.run([check_op, loss_t, optim, ms_op, global_step])
-                    #_, loss, _, ms, step = s.run([self.density_net.test_ops, loss_t, optim, ms_op, global_step])
-                    loss, _, ms, step = s.run([loss_t, optim, ms_op, global_step])
-                    writer.add_summary(ms, step)
-                    print("Current iteration: {:5d}, Current loss: {:.2f}".format(step, loss))
-                print("Fininshed training...")
+                #while not s.should_stop():
+                while True:
+                    try:    
+                        #_, loss, _, ms, step = s.run([check_op, loss_t, optim, ms_op, global_step])
+                        #_, loss, _, ms, step = s.run([self.density_net.test_ops, loss_t, optim, ms_op, global_step])
+                        loss, _, ms, step = s.run([loss_t, optim, ms_op, global_step])
+                        writer.add_summary(ms, step)
+                        print("Current iteration: {:5d}, Current loss: {:.2f}".format(step, loss))
+                        if step % 1000 == 0:
+                            print("Save model at: {}".format(saver.save(s, "./models/model.ckpt")))
+                    except tf.errors.OutOfRangeError as e:
+                        print("Fininshed training...")
+                        break
 
 
 if __name__ == "__main__":

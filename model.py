@@ -117,8 +117,8 @@ class AttnNet(object):
             wfunc1 = tf.expand_dims(wfunc, 1)
             wfunc2 = tf.expand_dims(wfunc, 2)
             sq = tf.reduce_sum(wfunc1*tf.math.conj(wfunc2)*coeff_sq, axis=2)
-            cf = tf.math.real(sq)/tf.reduce_sum(tf.square(coeff), axis=[1], keep_dims=True) 
-            sf = tf.math.imag(sq)/tf.reduce_sum(tf.square(coeff), axis=[1], keep_dims=True) 
+            cf = tf.math.real(sq)/tf.reduce_sum(tf.square(coeff), axis=[1], keepdims=True) 
+            sf = tf.math.imag(sq)/tf.reduce_sum(tf.square(coeff), axis=[1], keepdims=True) 
 
             feat = tf.concat([atom_embeds, cf, sf], axis = -1)
             #coeff_ij = tf.einsum("bij,bkj->bik", coeff, coeff) # nbatch x maxatom x maxatom

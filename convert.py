@@ -133,7 +133,7 @@ class RecordWriter(object):
             if tmp_str[1] > self.config["max_energy"]: continue
             e_rec.append(tmp_str[1])
             cnt += 1
-            print("Current Num: {}/170k, Train Num: {}, Test Num: {}, Val Num: {}"\
+            print("Current Num: {}/250k, Train Num: {}, Test Num: {}, Val Num: {}"\
                     .format(cnt, ntrain, nval, ntest), end="\r")
             prob = random.random()
             if prob < self.config["train_prob"]:
