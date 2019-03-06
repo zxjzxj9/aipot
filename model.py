@@ -42,7 +42,7 @@ class AttnNet(object):
             for i, j, k in itertools.product(*itertools.repeat(range(self.n_kmesh), 3)):
                 kmesh.append(np.array([i/self.n_kmesh, j/self.n_kmesh, k/self.n_kmesh]))
 
-            kmesh = np.stack(kmesh, axis=0) # n_kmesh**3
+            kmesh = np.stack(kmesh, axis=0) # n_kmesh**3 x 3
         return tf.constant(kmesh, dtype=tf.float32)              
         
     def get_pos_embed(self, latts, carts):
@@ -105,7 +105,7 @@ class AttnNet(object):
             atom_embeds = self.get_atom_embed(atom_ids)
 
             # mask out padding atoms
-            coeff = tf.keras.layers.Dense(1, activation=None)(atom_embeds) # nbatch x maxatom x 1
+            coeff = tf.keras.layers.Dense(1, activation=tf.nn.tanh)(atom_embeds) # nbatch x maxatom x 1
             coeff = tf.where(tf.expand_dims(tf.not_equal(atom_ids, 0), axis=-1), coeff, tf.zeros_like(coeff))
             coeff_sq = tf.expand_dims(tf.complex(tf.einsum("bij,bkj->bik", coeff, coeff), 0.0), -1)
 
@@ -174,13 +174,17 @@ class AttnNet(object):
     def train(self, atom_ids, coords, latts, force, energy, stress):
         with self.train_graph.as_default():
             energy_p = self.energy_func(atom_ids, coords, latts)
-            force_p = -tf.gradients(energy_p, coords)[0]
+            
+            masks1 = tf.cast(tf.not_equal(atom_ids, 0), tf.float32)
+            masks1 = tf.expand_dims(masks1, axis=-1)
+
+            force_p = -tf.gradients(energy_p, coords)[0]*masks1
             vols = tf.reshape(tf.abs(tf.linalg.det(latts)), (-1, 1, 1))
             stress_p = -tf.einsum("bij,bkj->bik", tf.gradients(energy_p, latts)[0], latts)/vols
 
             masks = tf.cast(tf.not_equal(atom_ids, 0), tf.float32)
             na = tf.reduce_sum(masks, axis=1)
-
+            self.avg_na =  tf.reduce_mean(na)
             #loss = tf.losses.huber_loss(energy/na, energy_p/na, delta=1.0) + \
             #       tf.losses.huber_loss(force, force_p, delta=1.0) + \
             #       tf.losses.huber_loss(stress, stress_p, delta=0.1)
@@ -190,12 +194,11 @@ class AttnNet(object):
                    tf.losses.mean_squared_error(stress, stress_p)
 
             energy_loss_t = tf.sqrt(tf.reduce_mean(((energy-energy_p)/na)**2))
-            na = tf.reshape(na, (-1, 1, 1))
+            #na = tf.reshape(na, (-1, 1, 1))
             force_loss_t = tf.sqrt(tf.reduce_mean(tf.reduce_sum(((force-force_p))**2, axis=-1)))
-            stress_loss_t = tf.sqrt(tf.reduce_mean(((stress-stress_p)/na)**2))
+            stress_loss_t = tf.sqrt(tf.reduce_mean(((stress-stress_p))**2))
+
         return loss, energy_loss_t, force_loss_t, stress_loss_t
-
-
 
 if __name__ == "__main__":
     data_path = "./data/train.tfrecords"

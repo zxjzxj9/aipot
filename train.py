@@ -42,6 +42,7 @@ class ModelTrainer(object):
         self.nepoch = self.config["nepoch"]
         self.bs = self.config["batch_size"]
         self.lr = self.config["learning_rate"]
+        self.model_path = self.config.get("model_path")
 
         self.attn_net = AttnNet(self.max_atom, self.n_atom_embed, self.n_kmesh, self.n_trans, self.n_heads, self.n_ff)
 
@@ -66,7 +67,7 @@ class ModelTrainer(object):
             with tf.control_dependencies(update_ops):
                 #optimizer = tf.train.AdamOptimizer(learning_rate=self.lr, beta1=0.99, beta2=0.999)
                 optimizer = tf.train.AdamOptimizer(learning_rate=self.lr)
-                optimizer = tf.contrib.estimator.clip_gradients_by_norm(optimizer, clip_norm=5.0)
+                #optimizer = tf.contrib.estimator.clip_gradients_by_norm(optimizer, clip_norm=5.0)
                 optim = optimizer.minimize(loss_t, global_step=global_step)
             #print(tf.trainable_variables()); import sys; sys.exit()
             writer = tf.summary.FileWriter("./logs", self.attn_net.train_graph)
@@ -82,15 +83,21 @@ class ModelTrainer(object):
             with tf.Session() as s:
                 #s = tf_debug.LocalCLIDebugWrapperSession(s)
                 s.run(tf.global_variables_initializer())
+
+                if self.model_path:
+                    print("Loading model at:", self.model_path)
+                    saver.restore(s, self.model_path)
                 #s.run(iterator.initializer)
                 #while not s.should_stop():
                 while True:
                     try:    
                         #_, loss, _, ms, step = s.run([check_op, loss_t, optim, ms_op, global_step])
                         #_, loss, _, ms, step = s.run([self.density_net.test_ops, loss_t, optim, ms_op, global_step])
-                        loss, _, ms, step = s.run([loss_t, optim, ms_op, global_step])
+                        #avg_na = s.run(tf.reduce_sum(tf.cast(tf.not_equal(features["serial"], 0), tf.float32)))/self.bs
+                        loss, _, ms, step, avg_na = s.run([loss_t, optim, ms_op, global_step, self.attn_net.avg_na])
                         writer.add_summary(ms, step)
-                        print("Current iteration: {:5d}, Current loss: {:.2f}".format(step, loss))
+                        #print("Current iteration: {:5d}, Current loss: {:.2f}".format(step, loss))
+                        print("Current iteration: {:5d}, Current loss: {:.2f}, avg_na: {:.2f}".format(step, loss, avg_na))
                         if step % 1000 == 0:
                             print("Save model at: {}".format(saver.save(s, "./models/model.ckpt")))
                     except tf.errors.OutOfRangeError as e:

@@ -5,8 +5,8 @@
 version: 0.1
 
 # Define max atom number to be trained
-max_atom_num: 32
-max_energy: 0.0
+max_atom_num: 64
+max_energy: -1.0
 # Define the structure file
 str_file: "./data/TrainStr.txt"
 # Define the force file
@@ -18,9 +18,9 @@ val_file: "./data/val.tfrecords"
 test_file: "./data/test.tfrecords"
 
 # For data splitting
-train_prob: 0.9998
-val_prob: 0.0001
-test_prob: 0.0001
+train_prob: 0.9000
+val_prob: 0.0500
+test_prob: 0.0500
 
 # This section define the atom name and
 # serial number of each species
@@ -38,12 +38,14 @@ test_prob: 0.0001
 #    H: 3
 
 # Training parameter
-nepoch: 1000
-batch_size: 128
-learning_rate: 0.0001
+nepoch: 100
+batch_size: 64
+learning_rate: 0.001
 
 n_atom_embed: 1024
 n_kmesh: 8
 n_trans: 128
 n_heads: 16
 n_ff: 2048
+
+#model_path: "./models/model.ckpt"
