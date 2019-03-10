@@ -5,7 +5,7 @@ import yaml
 from model import AttnNet
 
 from tensorflow.python import debug as tf_debug
-
+import numpy as np
 
 def _parse_function(example, max_atom):
     features = {
@@ -39,6 +39,7 @@ class ModelTrainer(object):
         self.n_ff = self.config["n_ff"]
 
         self.train_path = self.config["train_file"]
+        self.valid_path = self.config["valid_file"]
         self.nepoch = self.config["nepoch"]
         self.bs = self.config["batch_size"]
         self.lr = self.config["learning_rate"]
@@ -46,15 +47,55 @@ class ModelTrainer(object):
 
         self.attn_net = AttnNet(self.max_atom, self.n_atom_embed, self.n_kmesh, self.n_trans, self.n_heads, self.n_ff)
 
+    def valid(self):
+
+        with self.attn_net.valid_graph.as_default():
+
+            dataset = tf.data.TFRecordDataset(tf.constant([self.valid_path]))
+            dataset = dataset.map(lambda x: _parse_function(x, self.max_atom))
+            dataset = dataset.batch(self.bs)
+            dataset = dataset.repeat(1)
+            iterator = dataset.make_one_shot_iterator()
+            features = iterator.get_next() 
+            
+            loss_t, energy_loss_t, force_loss_t, stress_loss_t = \
+                self.attn_net.validate(features["serial"], features["coord"], features["latt"], 
+                    features["force"], features["energy"], features["stress"])
+            global_step = tf.Variable(0, name='global_step',trainable=False)
+
+            writer = tf.summary.FileWriter("./valid_logs", self.attn_net.valid_graph)
+            tf.summary.scalar("0.loss", loss_t)
+            tf.summary.scalar("1.energy_loss", energy_loss_t)
+            tf.summary.scalar("2.force_loss", force_loss_t)
+            tf.summary.scalar("3.stress_loss", stress_loss_t)
+
+            ms_op = tf.summary.merge_all()
+            saver = tf.train.Saver()
+
+            with tf.Session() as s:
+                s.run(tf.global_variables_initializer())
+
+                if self.model_path:
+                    print("Loading model at:", self.model_path)
+                    saver.restore(s, self.model_path)
+
+                while True:
+                    try:    
+                        ms, step= s.run([ms_op, global_step])
+                        writer.add_summary(ms, step)
+                    except tf.errors.OutOfRangeError as e:
+                        print("Fininshed training...")
+                        break
+
     def train(self):
 
         with self.attn_net.train_graph.as_default():
 
             dataset = tf.data.TFRecordDataset(tf.constant([self.train_path]))
             dataset = dataset.map(lambda x: _parse_function(x, self.max_atom))
-            dataset = dataset.shuffle(buffer_size=1000)
             dataset = dataset.batch(self.bs)
             dataset = dataset.repeat(self.nepoch)
+            dataset = dataset.shuffle(buffer_size=2000)
             iterator = dataset.make_one_shot_iterator()
             features = iterator.get_next() 
       
@@ -76,7 +117,7 @@ class ModelTrainer(object):
             tf.summary.scalar("2.force_loss", force_loss_t)
             tf.summary.scalar("3.stress_loss", stress_loss_t)
             ms_op = tf.summary.merge_all()
-            check_op = tf.add_check_numerics_ops()
+            #check_op = tf.add_check_numerics_ops()
 
             saver = tf.train.Saver()
             #with tf.train.MonitoredTrainingSession() as s:
@@ -94,7 +135,13 @@ class ModelTrainer(object):
                         #_, loss, _, ms, step = s.run([check_op, loss_t, optim, ms_op, global_step])
                         #_, loss, _, ms, step = s.run([self.density_net.test_ops, loss_t, optim, ms_op, global_step])
                         #avg_na = s.run(tf.reduce_sum(tf.cast(tf.not_equal(features["serial"], 0), tf.float32)))/self.bs
-                        loss, _, ms, step, avg_na = s.run([loss_t, optim, ms_op, global_step, self.attn_net.avg_na])
+                        loss, _, ms, step, avg_na, ret = s.run([loss_t, optim, ms_op, global_step, self.attn_net.avg_na, self.attn_net.check_ops])
+                        #loss, _, ms, step, avg_na, ret = s.run([loss_t, optim, ms_op, global_step, self.attn_net.avg_na, check_op])
+                        #if loss > 10:
+                        #    print("Identify singular structure")
+                        #    for k, v in ret.items():
+                        #        np.save("{}.npy".format(k), v) 
+                        #    import sys; sys.exit()
                         writer.add_summary(ms, step)
                         #print("Current iteration: {:5d}, Current loss: {:.2f}".format(step, loss))
                         print("Current iteration: {:5d}, Current loss: {:.2f}, avg_na: {:.2f}".format(step, loss, avg_na))
@@ -108,3 +155,4 @@ class ModelTrainer(object):
 if __name__ == "__main__":
     mt = ModelTrainer("./config.yml")
     mt.train()
+    #mt.valid()

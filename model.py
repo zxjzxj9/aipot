@@ -22,9 +22,12 @@ class AttnNet(object):
         self.n_kmesh = n_kmesh
         self.n_trans = n_trans
         self.n_heads = n_heads
+        self.n_zetas = 256
+        self.nsc = 2
 
-        self.n_pos_embed = 2*n_kmesh**3
-        self.n_dims = 2*self.n_kmesh**3+self.n_atom_embed
+        #self.n_pos_embed = 2*n_kmesh**3
+        #self.n_dims = 2*self.n_kmesh**3+self.n_atom_embed
+        self.n_dims = self.n_zetas + self.n_atom_embed
 
         self.n_ff = n_ff
         self._build_graph()
@@ -33,6 +36,13 @@ class AttnNet(object):
         with tf.variable_scope("atomic_embedding"):
             embed=tf.get_variable("embed", shape=(self.atom_kinds, self.n_atom_embed),
                 dtype=tf.float32, initializer=tf.initializers.random_normal(stddev=1.0e-3))
+            embeds = tf.nn.embedding_lookup(embed, atom_ids)
+        return embeds
+
+    def get_param_embed(self, atom_ids, name, mean=5.0):
+        with tf.variable_scope("{}_embedding".format(name)):
+            embed=tf.get_variable("embed", shape=(self.atom_kinds, self.n_zetas),
+                dtype=tf.float32, initializer=tf.initializers.random_normal(mean=mean, stddev=1.0e-3*abs(mean)))
             embeds = tf.nn.embedding_lookup(embed, atom_ids)
         return embeds
 
@@ -60,7 +70,6 @@ class AttnNet(object):
             trans=tf.get_variable("trans", shape=(self.n_dims, self.n_trans),
                 dtype=tf.float32, initializer=tf.initializers.random_normal(stddev=1.0e-3))
         return trans 
-
 
     def attn(self, embed, mask, name=""):
         """
@@ -90,7 +99,7 @@ class AttnNet(object):
             for idx in range(self.n_heads):
                 attns.append(self.attn(features, masks2, "{}".format(idx)))
             attns = tf.concat(attns, axis=-1) # nbatch x max_atom x (n_heads x n_trans)
-
+            # print(attns); import sys; sys.exit()
             # Feed-forward neural networks to calculate energy
             layer1 = tf.contrib.layers.layer_norm(features+attns)
             layer2 = tf.keras.layers.Dense(self.n_ff, activation=tf.nn.relu)(layer1)
@@ -121,15 +130,56 @@ class AttnNet(object):
             sf = tf.math.imag(sq)/tf.reduce_sum(tf.square(coeff), axis=[1], keepdims=True) 
 
             feat = tf.concat([atom_embeds, cf, sf], axis = -1)
-            #coeff_ij = tf.einsum("bij,bkj->bik", coeff, coeff) # nbatch x maxatom x maxatom
-            #coeff_ij = tf.expand_dims(coeff_ij, axis=-1) # nbatch x maxatom x maxatom x 1
-            #coeff_ij = tf.expand_dims(coeff_ij, axis=1) # nbatch x 1 x maxatom x maxatom x 1
-            #rij = tf.expand_dims(coords, dim=1) - tf.expand_dims(coords, dim=2) # nbatch x maxatom x maxatom x 3
-            #rij = tf.expand_dims(rij, axis=1) # nbatch x 1 x maxatom x maxatom x 3
-            #
-            #rvec = tf.reshape(rvec, shape=(-1, n_kmesh**3, 1, 1, 3)) # batch x n_kmesh**3 x 1 x 1 x 3
-            #
-            #sf =  tf.reduce_sum(rij*rvec, axis=[2,3,4])/tf.reuce_sum(tf.square(coeff), axis=[1])
+
+        return feat
+
+    def get_sc(self):
+        """
+            get supercell vector given the grid mesh, dim (nsc**3)*3
+        """
+        sc = []
+        a = np.array([1, 0, 0], dtype=np.float32)
+        b = np.array([0, 1, 0], dtype=np.float32)
+        c = np.array([0, 0, 1], dtype=np.float32)
+        # order z -> y -> x
+        for i, j, k in itertools.product(*itertools.repeat(range(-(self.nsc//2),self.nsc//2+1), 3)):
+            sc.append(i*a + j*b + k*c)
+        sc = np.stack(sc, axis=0)
+        #print(sc.shape)
+
+        with tf.variable_scope("supercell"):
+            sc = tf.constant(sc, dtype=tf.float32)
+        return sc
+
+    def dist_weight(self, atom_ids, latts, coords):
+
+        with tf.variable_scope("distance_weight"):
+            atom_embeds = self.get_atom_embed(atom_ids)
+
+            zeta = self.get_param_embed(atom_ids, "zeta", 0.1)   # batch x maxatom x nzeta    
+            zeta = tf.expand_dims(zeta, axis=1) # batch x 1 x maxatom x nzeta
+
+            coeff = self.get_param_embed(atom_ids, "coeff", 0.001) # batch x maxatom x nzeta
+            mask = tf.cast(tf.not_equal(atom_ids, 0), tf.float32) # batch x maxatom
+            mask = tf.expand_dims(mask, -1)
+            coeff = mask*coeff
+            coeff = tf.expand_dims(coeff, axis=1) # batch x 1 x maxatom x nzeta
+
+            inv_latts = tf.matrix_inverse(latts)
+            frac = tf.einsum("bij,bjk->bik", coords, inv_latts) # batch x maxatom x 3
+            frac = tf.expand_dims(frac, axis=2) # batch x maxatom x 1 x 3
+            fract = tf.transpose(frac, perm=[0, 2, 1, 3]) # batch x 1 x maxatom x 3
+            sc = tf.reshape(self.get_sc(), shape=[1, -1, 1, 1, 3]) #  1 x nsc**3 x 1 x 1 x 3 
+            dfrac = tf.expand_dims(fract - frac , axis = 1) # batch x 1 x maxatom x maxatom x 3
+            dfrac = dfrac + sc # batch x nsc**3  x maxatom x maxatom x 3
+            dreal = tf.einsum("blnmi,bij->blnmj", dfrac, latts) # batch x nsc**3  x maxatom x maxatom x 3
+            dreal = tf.reduce_sum(tf.square(dreal), axis=-1, keepdims=True) # batch x nsc**3  x maxatom x maxatom x 1
+            dreal = tf.where(tf.equal(dreal, 0), 9999*tf.ones_like(dreal), dreal) # maske out self image
+            dreal = tf.sqrt(tf.reduce_min(dreal, axis=1)) # batch x maxatom x maxatom x 1
+            #dreal = tf.reduce_min(dreal, axis=1) # batch x maxatom x maxatom x 1
+            
+            weight = tf.reduce_sum(coeff*tf.exp(-tf.abs(zeta)*dreal), axis=-2) # batch x maxatom x nzeta
+            feat = tf.concat([atom_embeds, weight], axis=-1) 
 
         return feat
 
@@ -141,21 +191,28 @@ class AttnNet(object):
             #atom_embeds = self.get_atom_embed(atom_ids)
             #pos_embeds = self.get_pos_embed(latts, coords)
             #embeds = tf.concat((atom_embeds, pos_embeds), axis=-1)
-            embeds = self.stru_factor(atom_ids, latts, coords)
+            #embeds = self.stru_factor(atom_ids, latts, coords)
+            embeds = self.dist_weight(atom_ids, latts, coords)
+            #print(embeds)
+            #import sys; sys.exit()
 
             masks1 = tf.cast(tf.not_equal(atom_ids, 0), tf.float32)
             masks2 = tf.equal(atom_ids, 0)
 
             layer1 = self.trans(embeds, masks2, "1")
-            #layer2 = self.trans(layer1, masks2, "2")
+            #layer1 = self.trans(layer1, masks2, "2")
             #layer3 = self.trans(layer2, masks2, "3")
 
-            layer4 = tf.keras.layers.Dense(self.n_ff, activation=tf.nn.relu)(layer1)
+            layer2 = tf.keras.layers.Dense(self.n_ff, activation=tf.nn.relu)(layer1)
+            layer3 = tf.keras.layers.Dense(self.n_ff, activation=tf.nn.relu)(layer2)
+            layer4 = tf.keras.layers.Dense(self.n_ff, activation=tf.nn.relu)(layer3)
             layer5 = tf.keras.layers.Dense(self.n_ff, activation=tf.nn.relu)(layer4)
-            layer6 = tf.squeeze(tf.keras.layers.Dense(1, activation=None)(layer5))
-            atomic_energy = masks1*layer6
+            layer6 = tf.keras.layers.Dense(self.n_ff, activation=tf.nn.relu)(layer5)
+            layer7 = tf.keras.layers.Dense(self.n_ff, activation=tf.nn.relu)(layer6)
+            layer8 = tf.squeeze(tf.keras.layers.Dense(1, activation=None)(layer7))
+            atomic_energy = masks1*layer8
             energy = tf.reduce_sum(atomic_energy, axis=-1)
-
+            
             ## mask out unused atoms
             #layer4 = tf.expand_dims(masks1, axis=-1)*layer3 # nbatch x maxatom x self.n_dims
             ## nbatch x self.n_dims, average over all usable atoms
@@ -185,13 +242,31 @@ class AttnNet(object):
             masks = tf.cast(tf.not_equal(atom_ids, 0), tf.float32)
             na = tf.reduce_sum(masks, axis=1)
             self.avg_na =  tf.reduce_mean(na)
-            #loss = tf.losses.huber_loss(energy/na, energy_p/na, delta=1.0) + \
-            #       tf.losses.huber_loss(force, force_p, delta=1.0) + \
-            #       tf.losses.huber_loss(stress, stress_p, delta=0.1)
 
-            loss = tf.losses.mean_squared_error(energy/na, energy_p/na) + \
-                   tf.losses.mean_squared_error(force, force_p) + \
-                   tf.losses.mean_squared_error(stress, stress_p)
+            loss = tf.losses.huber_loss(energy/na, energy_p/na, delta=0.05) + \
+                   tf.losses.huber_loss(force, force_p, delta=0.5) + \
+                   tf.losses.huber_loss(stress, stress_p, delta=0.05)
+
+            #loss = tf.losses.mean_squared_error(energy/na, energy_p/na) + \
+            #       tf.losses.mean_squared_error(force, force_p) + \
+            #       tf.losses.mean_squared_error(stress, stress_p)
+
+            #loss = tf.losses.mean_squared_error(energy, energy_p) + \
+            #       tf.losses.mean_squared_error(force, force_p) + \
+            #       tf.losses.mean_squared_error(stress, stress_p)
+
+            # Add code to check the broken structure
+            self.check_ops = {}
+            #cdt = tf.greater_equal(loss, 30)
+            #self.check_ops.append(tf.cond(cdt, lambda: tf.print(energy_p/na), lambda: False))
+            #self.check_ops.append(tf.cond(cdt, lambda: tf.print(energy/na), lambda: False))
+            self.check_ops["energy_p"] = energy_p
+            self.check_ops["energy"] = energy
+            self.check_ops["force_p"] = force_p
+            self.check_ops["force"] = force
+            self.check_ops["atom_ids"] = atom_ids
+            self.check_ops["latts"] = latts
+            self.check_ops["coords"] = coords
 
             energy_loss_t = tf.sqrt(tf.reduce_mean(((energy-energy_p)/na)**2))
             #na = tf.reshape(na, (-1, 1, 1))
@@ -199,6 +274,47 @@ class AttnNet(object):
             stress_loss_t = tf.sqrt(tf.reduce_mean(((stress-stress_p))**2))
 
         return loss, energy_loss_t, force_loss_t, stress_loss_t
+
+    def validate(self, atom_ids, coords, latts, force, energy, stress):
+
+        with self.valid_graph.as_default():
+            energy_p = self.energy_func(atom_ids, coords, latts)
+            
+            masks1 = tf.cast(tf.not_equal(atom_ids, 0), tf.float32)
+            masks1 = tf.expand_dims(masks1, axis=-1)
+
+            force_p = -tf.gradients(energy_p, coords)[0]*masks1
+            vols = tf.reshape(tf.abs(tf.linalg.det(latts)), (-1, 1, 1))
+            stress_p = -tf.einsum("bij,bkj->bik", tf.gradients(energy_p, latts)[0], latts)/vols
+
+            masks = tf.cast(tf.not_equal(atom_ids, 0), tf.float32)
+            na = tf.reduce_sum(masks, axis=1)
+            self.avg_na =  tf.reduce_mean(na)
+
+            loss = tf.losses.huber_loss(energy/na, energy_p/na, delta=0.05) + \
+                   tf.losses.huber_loss(force, force_p, delta=0.5) + \
+                   tf.losses.huber_loss(stress, stress_p, delta=0.05)
+
+            energy_loss_t = tf.sqrt(tf.reduce_mean(((energy-energy_p)/na)**2))
+            #na = tf.reshape(na, (-1, 1, 1))
+            force_loss_t = tf.sqrt(tf.reduce_mean(tf.reduce_sum(((force-force_p))**2, axis=-1)))
+            stress_loss_t = tf.sqrt(tf.reduce_mean(((stress-stress_p))**2))
+
+        return loss, energy_loss_t, force_loss_t, stress_loss_t
+
+    def infer(self, atom_ids, coords, latts):
+        
+        with self.infer_graph.as_default():
+            energy_p = self.energy_func(atom_ids, coords, latts)
+            
+            masks1 = tf.cast(tf.not_equal(atom_ids, 0), tf.float32)
+            masks1 = tf.expand_dims(masks1, axis=-1)
+
+            force_p = -tf.gradients(energy_p, coords)[0]*masks1
+            vols = tf.reshape(tf.abs(tf.linalg.det(latts)), (-1, 1, 1))
+            stress_p = -tf.einsum("bij,bkj->bik", tf.gradients(energy_p, latts)[0], latts)/vols
+
+        return energy_p, force_p, stress_p
 
 if __name__ == "__main__":
     data_path = "./data/train.tfrecords"

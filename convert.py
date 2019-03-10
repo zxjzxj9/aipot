@@ -26,7 +26,7 @@ class StrReader(object):
 
     def _parse_str(self, s):
         if not s.readline(): raise StopIteration
-        energy = float(s.readline().split()[-2])
+        energy = float(s.readline().split()[2])
         na = int(s.readline().split()[-1])
         s.readline() # element in structure
         s.readline() # symbol
@@ -50,6 +50,10 @@ class StrReader(object):
         s.readline() # blank line
 
         coords = np.stack(coords, axis=0)
+
+        if na > self.config["max_atom_num"]:
+            return None
+
         #print(np.pad(np.array(atoms), (0, self.config["max_atom_num"]-na), 'constant'))
         #print(self.mapping)
         #atoms = [self.mapping[at] for at in atoms]
@@ -73,6 +77,10 @@ class StrReader(object):
         #atoms = [self.mapping[at] for at in atoms]
         f.readline()
         f.readline()
+
+        if na > self.config["max_atom_num"]:
+            return None
+
         stress = np.array([[sxx, sxy, sxz], [sxy, syy, syz], [sxz, syz, szz]])
         return na, stress, np.array(atoms), np.pad(np.stack(forces, axis=0), \
                    ((0, self.config["max_atom_num"]-na), (0, 0)), 'constant')
@@ -85,6 +93,7 @@ class StrReader(object):
                 try:
                     tmp_str = self._parse_str(s)
                     tmp_for = self._parse_force(f, tmp_str[0])
+                    if not tmp_str: continue 
                     assert functools.reduce(lambda x,y : x and y, zip(tmp_str[2], tmp_for[2]))
                     yield tmp_str, tmp_for
                 except StopIteration:
@@ -94,7 +103,7 @@ class RecordWriter(object):
     def __init__(self, config="./config.yml"):
         self.config = yaml.load(open(config))
         self.train_writer = tf.python_io.TFRecordWriter(self.config["train_file"]) 
-        self.val_writer = tf.python_io.TFRecordWriter(self.config["val_file"])
+        self.val_writer = tf.python_io.TFRecordWriter(self.config["valid_file"])
         self.test_writer = tf.python_io.TFRecordWriter(self.config["test_file"])
 
     def _int64_feature(self, value):
@@ -131,13 +140,19 @@ class RecordWriter(object):
         
         for tmp_str, tmp_for in reader:
             if tmp_str[1] > self.config["max_energy"]: continue
-            e_rec.append(tmp_str[1])
+            e_rec.append(tmp_str[1]/tmp_str[0])
             cnt += 1
             print("Current Num: {}/250k, Train Num: {}, Test Num: {}, Val Num: {}"\
                     .format(cnt, ntrain, nval, ntest), end="\r")
             prob = random.random()
             if prob < self.config["train_prob"]:
                 ntrain += 1
+                #print(tmp_str[3]); import sys;sys.exit() 
+
+                if np.linalg.cond(tmp_str[3]) > 10**4:
+                    print("ill condition cell matrix, skip...")
+                    continue
+
                 self.write_feature(tmp_str, tmp_for, self.train_writer)
 
                 for i in range(aug_num):

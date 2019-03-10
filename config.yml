@@ -14,7 +14,7 @@ force_file: "./data/TrainFor.txt"
 
 # Ouput Train file
 train_file: "./data/train.tfrecords"
-val_file: "./data/val.tfrecords"
+valid_file: "./data/val.tfrecords"
 test_file: "./data/test.tfrecords"
 
 # For data splitting
@@ -38,14 +38,17 @@ test_prob: 0.0500
 #    H: 3
 
 # Training parameter
-nepoch: 100
-batch_size: 64
+nepoch: 300
+batch_size: 256
 learning_rate: 0.001
 
-n_atom_embed: 1024
+#n_atom_embed: 1024
+n_atom_embed: 256
 n_kmesh: 8
-n_trans: 128
-n_heads: 16
-n_ff: 2048
+n_zetas: 256
 
-#model_path: "./models/model.ckpt"
+n_trans: 64
+n_heads: 8
+n_ff: 512
+
+model_path: "./models/model.ckpt"
